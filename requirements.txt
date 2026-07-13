@@ -1,0 +1,5 @@
+mysql-connector-python
+clickhouse-connect
+python-dotenv
+apscheduler
+requests

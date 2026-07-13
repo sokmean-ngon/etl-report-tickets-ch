@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  mysql-clickhouse-sync:
+    image: etl-report-tickets-ch:01
+
+    container_name: mysql-clickhouse-sync
+
+    restart: unless-stopped
+
+    network_mode: host
+
+    env_file:
+      - .env
+
+    environment:
+      TZ: ${TZ}
+      
+    volumes:
+      - ./logs:/app/logs
+      - ./state.json:/app/state.json
+
+    working_dir: /app
+
+    command: ["python", "app.py"]
