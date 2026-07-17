@@ -13,28 +13,37 @@ class MySQLReader:
 
     def __init__(self):
         self.conn = mysql.connector.connect(**MYSQL)
-        self.cursor = self.conn.cursor(dictionary=True)
+        self.cursor = self.conn.cursor(
+            dictionary=True,
+            buffered=True,
+        )
 
     def get_tables(self):
         self.cursor.execute("SHOW TABLES")
-        return [list(row.values())[0] for row in self.cursor.fetchall()]
+        rows = self.cursor.fetchall()
+        return [next(iter(row.values())) for row in rows]
 
     def get_columns(self, table):
         self.cursor.execute(f"SHOW COLUMNS FROM `{table}`")
         return self.cursor.fetchall()
 
-    def fetch_batch(self, table, last_id):
+    def build_where_clause(self):
+        return f"""
+        `{ID_COLUMN}` > %s
+        AND `{DATE_COLUMN}` < CAST(
+            DATE_FORMAT(
+                DATE_SUB(CURDATE(), INTERVAL %s DAY),
+                '%Y%m%d'
+            ) AS UNSIGNED
+        )
+        """
 
+    def fetch_batch(self, table, last_id):
+        self.conn.ping(reconnect=True)
         sql = f"""
         SELECT *
         FROM `{table}`
-        WHERE `{ID_COLUMN}` > %s
-        AND `{DATE_COLUMN}` < CAST(
-                DATE_FORMAT(
-                    DATE_SUB(CURDATE(), INTERVAL %s DAY),
-                    '%Y%m%d'
-                ) AS UNSIGNED
-            )
+        WHERE {self.build_where_clause()}
         ORDER BY `{ID_COLUMN}`
         LIMIT %s
         """
@@ -57,15 +66,14 @@ class MySQLReader:
 
     def count_remaining(self, table, last_id):
         sql = f"""
-        SELECT COUNT(*)
+        SELECT COUNT(*) AS total
         FROM `{table}`
-        WHERE `{ID_COLUMN}` > %s
-          AND `{DATE_COLUMN}` < DATE_SUB(NOW(), INTERVAL %s DAY)
+        WHERE {self.build_where_clause()}
         """
 
         self.cursor.execute(sql, (last_id, SKIP_LAST_DAYS))
 
-        return self.cursor.fetchone()["COUNT(*)"]
+        return self.cursor.fetchone()["total"]
 
     def close(self):
         self.cursor.close()
