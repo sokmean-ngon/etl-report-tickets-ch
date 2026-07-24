@@ -27,30 +27,40 @@ class MySQLReader:
         self.cursor.execute(f"SHOW COLUMNS FROM `{table}`")
         return self.cursor.fetchall()
 
-    def build_where_clause(self):
-        return f"""
-        `{ID_COLUMN}` > %s
-        AND `{DATE_COLUMN}` < CAST(
-            DATE_FORMAT(
-                DATE_SUB(CURDATE(), INTERVAL %s DAY),
-                '%Y%m%d'
-            ) AS UNSIGNED
+    def fetch_batch(self, table, last_date, last_id):
+        self.conn.ping(
+            reconnect=True,
+            attempts=3,
+            delay=2,
         )
-        """
 
-    def fetch_batch(self, table, last_id):
-        self.conn.ping(reconnect=True)
         sql = f"""
         SELECT *
         FROM `{table}`
-        WHERE {self.build_where_clause()}
-        ORDER BY `{ID_COLUMN}`
+        WHERE (
+                `{DATE_COLUMN}` > %s
+            OR (
+                `{DATE_COLUMN}` = %s
+                AND `{ID_COLUMN}` > %s
+            )
+        )
+        AND `{DATE_COLUMN}` < CAST(
+                DATE_FORMAT(
+                    DATE_SUB(CURDATE(), INTERVAL %s DAY),
+                    '%Y%m%d'
+                ) AS UNSIGNED
+            )
+        ORDER BY
+            `{DATE_COLUMN}`,
+            `{ID_COLUMN}`
         LIMIT %s
         """
 
         self.cursor.execute(
             sql,
             (
+                last_date,
+                last_date,
                 last_id,
                 SKIP_LAST_DAYS,
                 BATCH_SIZE,
@@ -59,21 +69,16 @@ class MySQLReader:
 
         rows = self.cursor.fetchall()
 
+        new_last_date = last_date
+        new_last_id = last_id
+
         if rows:
-            last_id = rows[-1][ID_COLUMN]
+            checkpoint = rows[-1]
 
-        return rows, last_id
+            new_last_date = checkpoint[DATE_COLUMN]
+            new_last_id = checkpoint[ID_COLUMN]
 
-    def count_remaining(self, table, last_id):
-        sql = f"""
-        SELECT COUNT(*) AS total
-        FROM `{table}`
-        WHERE {self.build_where_clause()}
-        """
-
-        self.cursor.execute(sql, (last_id, SKIP_LAST_DAYS))
-
-        return self.cursor.fetchone()["total"]
+        return rows, new_last_date, new_last_id
 
     def close(self):
         self.cursor.close()

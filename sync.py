@@ -1,8 +1,7 @@
 import time
 import signal
-import sys
 
-from config import TABLES
+from config import (TABLES, MAX_RETRIES)
 from logger import get_logger
 from state import State
 from mysql_reader import MySQLReader
@@ -44,9 +43,12 @@ class SyncEngine:
         logger.info("=" * 80)
         logger.info(f"Start syncing [{table}]")
 
-        last_id = self.state.get_last_id(table)
+        last_date, last_id = self.state.get_checkpoint(table)
 
-        logger.info(f"Resume from ID : {last_id}")
+        logger.info(
+            f"Resume from Date={last_date} "
+            f"ID={last_id}"
+        )
 
         total_rows = 0
         batch = 0
@@ -54,9 +56,10 @@ class SyncEngine:
 
         while running:
 
-            rows, new_last_id = self.mysql.fetch_batch(
+            rows, new_last_date, new_last_id = self.mysql.fetch_batch(
                 table,
-                last_id
+                last_date,
+                last_id,
             )
 
             if not rows:
@@ -64,7 +67,7 @@ class SyncEngine:
 
             retry = 0
 
-            while retry < 3:
+            while retry < MAX_RETRIES:
 
                 try:
 
@@ -74,9 +77,10 @@ class SyncEngine:
                     )
 
                     # save checkpoint ONLY after insert success
-                    self.state.save_last_id(
+                    self.state.save_checkpoint(
                         table,
-                        new_last_id
+                        new_last_date,
+                        new_last_id,
                     )
 
                     break
@@ -87,34 +91,34 @@ class SyncEngine:
 
                     logger.error(
                         f"{table} batch failed "
-                        f"(retry {retry}/3): {e}"
+                        f"(retry {retry}/{MAX_RETRIES}): {e}"
                     )
 
-                    time.sleep(5)
+                    time.sleep(2 ** retry)
 
             else:
 
-                logger.error(
-                    f"{table}: maximum retries reached."
-                )
+                message = f"{table}: maximum retries reached."
 
-                return
+                logger.error(message)
+
+                raise RuntimeError(message)
 
             batch += 1
             total_rows += len(rows)
+
+            last_date = new_last_date
             last_id = new_last_id
 
             logger.info(
                 f"[{table}] "
                 f"Batch={batch:,} "
                 f"Rows={len(rows):,} "
+                f"LastDate={last_date} "
                 f"LastID={last_id:,}"
             )
 
-        elapsed = time.time() - start
-
-        if elapsed == 0:
-            elapsed = 1
+        elapsed = max(time.time() - start, 1)
 
         logger.info("-" * 80)
         logger.info(
@@ -135,6 +139,8 @@ class SyncEngine:
 
     def sync_all(self):
 
+        success = True
+
         tables = self.get_tables()
 
         logger.info(
@@ -152,11 +158,15 @@ class SyncEngine:
 
             except Exception as e:
 
+                success = False
+
                 logger.exception(
                     f"Failed syncing table {table}: {e}"
                 )
 
         logger.info("All synchronization completed.")
+
+        return success
 
     def close(self):
 
@@ -172,13 +182,17 @@ def main():
 
     try:
 
-        engine.sync_all()
+        success = engine.sync_all()
 
         elapsed = round(time.time() - start, 2)
 
         WebhookNotifier.send(
-            status="SUCCESS",
-            message="Synchronization completed successfully.",
+            status="SUCCESS" if success else "FAILED",
+            message=(
+                "Synchronization completed successfully."
+                if success
+                else "Synchronization completed with errors."
+            ),
             duration_seconds=elapsed,
         )
 

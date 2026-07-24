@@ -55,3 +55,5 @@ WEBHOOK_TIMEOUT = int(
 )
 
 TZ = os.getenv("TZ", "UTC")
+
+MAX_RETRIES = 3
